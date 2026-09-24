@@ -109,7 +109,7 @@ TELEGRAM_CHAT_ID=-1001234567890
 | `rpc.poll_interval_sec` | `2` | период опроса в режиме polling |
 | `rpc.confirmations` | `0` | обрабатывать блок `head − N`. Значение 1–2 снижает риск алертов по реорганизованным блокам |
 | `rpc.max_lag_blocks` | `5` | при большем отставании догоняем пачками |
-| `rpc.catchup_batch_blocks` | `20` | размер пачки `eth_getLogs` при догонке и в реплее |
+| `rpc.catchup_batch_blocks` | `10` | размер пачки `eth_getLogs` при догонке и в реплее (у бесплатного Alchemy лимит — 10 блоков) |
 | `rpc.max_catchup_blocks` | `2000` | при старте не догонять глубже (0 — без ограничения) |
 | `rpc.retry_base_delay_sec` / `retry_max_delay_sec` | `1` / `60` | экспоненциальная задержка ретраев |
 | `rpc.multicall_chunk` | `150` | вызовов в одном `aggregate3` |

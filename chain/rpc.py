@@ -149,12 +149,13 @@ class RpcClient:
             return await self._retry(f"eth_getLogs({from_block})",
                                      lambda: self._get_logs_once(from_block, to_block, topics))
         try:
+            # без повторов: чаще всего это лимит провайдера на диапазон — сразу делим пополам
             return await self._retry(f"eth_getLogs({from_block}-{to_block})",
                                      lambda: self._get_logs_once(from_block, to_block, topics),
-                                     attempts=2)
+                                     attempts=1)
         except RpcError as exc:
             mid = (from_block + to_block) // 2
-            log.info("eth_getLogs %d-%d не удался (%s), делим диапазон", from_block, to_block, _short(exc, 120))
+            log.debug("eth_getLogs %d-%d не удался (%s), делим диапазон", from_block, to_block, _short(exc, 120))
             left = await self.get_logs(from_block, mid, topics)
             right = await self.get_logs(mid + 1, to_block, topics)
             return left + right

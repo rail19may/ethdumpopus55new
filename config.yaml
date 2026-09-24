@@ -8,7 +8,7 @@ rpc:
   request_timeout_sec: 30
   confirmations: 0             # обрабатывать блок head - confirmations
   max_lag_blocks: 5            # если отстали больше чем на N блоков — догоняем пачками
-  catchup_batch_blocks: 20     # размер пачки eth_getLogs при догонке и в реплее
+  catchup_batch_blocks: 10     # размер пачки eth_getLogs при догонке и в реплее (бесплатный Alchemy — до 10)
   max_catchup_blocks: 2000     # при старте не догонять глубже (0 = без ограничения)
   retry_base_delay_sec: 1      # экспоненциальная задержка ретраев RPC: 1, 2, 4, ... сек
   retry_max_delay_sec: 60

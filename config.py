@@ -40,7 +40,7 @@ class RpcCfg:
     request_timeout_sec: float = 30.0
     confirmations: int = 0
     max_lag_blocks: int = 5
-    catchup_batch_blocks: int = 20
+    catchup_batch_blocks: int = 10
     max_catchup_blocks: int = 2000
     retry_base_delay_sec: float = 1.0
     retry_max_delay_sec: float = 60.0

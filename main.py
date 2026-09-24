@@ -16,6 +16,7 @@ from chain.block_source import BlockSource, PollingBlockSource, WebSocketBlockSo
 from chain.rpc import RpcClient, backoff_delay
 from config import Config, ConfigError, load_config
 from engine import Engine
+from logsafe import RedactingFormatter, secret_fragments
 from notify.format import fmt_usd
 from notify.notifiers import ConsoleNotifier, MultiNotifier, Notifier, TelegramNotifier
 from runner import LiveRunner, run_replay
@@ -44,10 +45,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def setup_logging(level: str) -> None:
-    logging.basicConfig(level=getattr(logging, level.upper(), logging.INFO),
-                        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-                        datefmt="%Y-%m-%d %H:%M:%S")
+def setup_logging(level: str, secrets: list[str] | None = None) -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(RedactingFormatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+                                            "%Y-%m-%d %H:%M:%S", secrets or []))
+    logging.basicConfig(level=getattr(logging, level.upper(), logging.INFO), handlers=[handler], force=True)
     for noisy in ("web3", "websockets", "aiohttp", "urllib3"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
@@ -129,7 +131,9 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"Ошибка конфигурации: {exc}", file=sys.stderr)
         return 2
-    setup_logging(args.log_level or cfg.log_level)
+    # ключи RPC и токен Telegram никогда не попадают в лог
+    setup_logging(args.log_level or cfg.log_level,
+                  secret_fragments(cfg.rpc.http_url, cfg.rpc.ws_url, cfg.telegram.bot_token))
 
     coro = replay(cfg, args) if args.replay else live(cfg, args)
     loop = asyncio.new_event_loop()
