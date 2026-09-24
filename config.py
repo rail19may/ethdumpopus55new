@@ -36,6 +36,7 @@ class RpcCfg:
     ws_url: str | None
     block_source: str = "polling"  # polling | websocket
     poll_interval_sec: float = 2.0
+    poll_quiet_after_block_sec: float = 10.0
     ws_idle_timeout_sec: float = 60.0
     request_timeout_sec: float = 30.0
     confirmations: int = 0

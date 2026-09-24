@@ -4,6 +4,7 @@
 rpc:
   block_source: polling        # polling | websocket (для websocket нужен RPC_WS_URL)
   poll_interval_sec: 2         # период опроса eth_blockNumber в режиме polling
+  poll_quiet_after_block_sec: 10  # после нового блока не опрашивать столько секунд (блоки — раз в 12 с)
   ws_idle_timeout_sec: 60      # переподключение WS, если за это время не пришло ни одного блока
   request_timeout_sec: 30
   confirmations: 0             # обрабатывать блок head - confirmations

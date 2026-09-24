@@ -20,6 +20,8 @@ IGNORED_FAKE = "ignored_fake"          # factory() врёт: фабрика не
 IGNORED_NO_QUOTE = "ignored_no_quote"  # ни одного котируемого токена
 IGNORED_BROKEN = "ignored_broken"      # у целевого токена не читается decimals()
 
+MAX_V3_FEE = 1 << 24  # fee в Uniswap V3 — uint24
+
 _FACTORY = encode_call("factory()")
 _TOKEN0 = encode_call("token0()")
 _TOKEN1 = encode_call("token1()")
@@ -141,10 +143,14 @@ class PoolCache:
             if factory in self.factories:
                 t0 = decode_address(r_t0.data) if r_t0.success else None
                 t1 = decode_address(r_t1.data) if r_t1.success else None
-                fee = decode_uint(r_fee.data) if r_fee.success else None
                 info.version = self.factories[factory]
+                # fee() отдаёт недоверенный контракт: у V3 это uint24, у V2 его нет вовсе.
+                # Мусорное значение не должно дойти до ABI-кодирования getPool и до SQLite.
+                fee = decode_uint(r_fee.data) if r_fee.success and info.version == "v3" else None
+                if fee is not None and fee >= MAX_V3_FEE:
+                    fee = None
                 info.token0, info.token1, info.fee = t0, t1, fee
-                if t0 is None or t1 is None or (info.version == "v3" and fee is None):
+                if t0 is None or t1 is None or t0 == t1 or (info.version == "v3" and fee is None):
                     info.status = IGNORED_FAKE
             infos.append(info)
 

@@ -57,7 +57,7 @@ class FakeRpc:
         self.fn(address, "token0()", ret(["address"], [token0]))
         self.fn(address, "token1()", ret(["address"], [token1]))
         if fee is not None:
-            self.fn(address, "fee()", ret(["uint24"], [fee]))
+            self.fn(address, "fee()", ret(["uint256"], [fee]))  # как в сыром ответе: 32 байта
 
     def v2_factory(self, factory: str, pairs: dict[tuple[str, str], str]) -> None:
         def get_pair(args: bytes, block: Any) -> bytes:

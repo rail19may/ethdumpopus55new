@@ -85,6 +85,51 @@ class TelegramNotifier(Notifier):
             await self._session.close()
 
 
+class BackgroundNotifier(Notifier):
+    """Отправляет уведомления в фоне, по очереди.
+
+    send() только ставит алерт в очередь и сразу возвращается: медленный или недоступный Telegram
+    (таймауты, 429 с retry_after) не тормозит обработку блоков.
+    """
+
+    def __init__(self, inner: Notifier, max_queue: int = 1000, drain_timeout: float = 30.0) -> None:
+        self.inner = inner
+        self.drain_timeout = drain_timeout
+        self.queue: asyncio.Queue[Alert] = asyncio.Queue(max_queue)
+        self._worker: asyncio.Task | None = None
+
+    @property
+    def notifiers(self) -> list[Notifier]:
+        return getattr(self.inner, "notifiers", [self.inner])
+
+    async def _run(self) -> None:
+        while True:
+            alert = await self.queue.get()
+            try:
+                await self.inner.send(alert)
+            except Exception:  # noqa: BLE001
+                log.exception("ошибка фоновой отправки уведомления")
+            finally:
+                self.queue.task_done()
+
+    async def send(self, alert: Alert) -> None:
+        if self._worker is None or self._worker.done():
+            self._worker = asyncio.create_task(self._run())
+        try:
+            self.queue.put_nowait(alert)
+        except asyncio.QueueFull:
+            log.error("очередь уведомлений переполнена, алерт %s потерян", alert.pool)
+
+    async def close(self) -> None:
+        if self._worker is not None:
+            try:
+                await asyncio.wait_for(self.queue.join(), self.drain_timeout)
+            except asyncio.TimeoutError:
+                log.warning("не все уведомления отправлены до остановки: %d в очереди", self.queue.qsize())
+            self._worker.cancel()
+        await self.inner.close()
+
+
 class MultiNotifier(Notifier):
     def __init__(self, notifiers: list[Notifier]) -> None:
         self.notifiers = notifiers

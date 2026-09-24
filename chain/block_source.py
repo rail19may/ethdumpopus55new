@@ -25,18 +25,34 @@ class BlockSource(abc.ABC):
 
 
 class PollingBlockSource(BlockSource):
-    def __init__(self, rpc: RpcClient, interval_sec: float = 2.0) -> None:
+    """Опрос eth_blockNumber.
+
+    Блоки в Ethereum выходят раз в 12 с, поэтому сразу после нового блока опрашивать бессмысленно:
+    выжидаем quiet_after_block_sec (отсчёт от момента, когда блок увидели), затем опрашиваем каждые
+    interval_sec, пока не появится следующий. Это ~2 запроса на блок вместо ~6 — экономия лимита
+    провайдера (Alchemy считает каждый вызов) без потери скорости.
+    """
+
+    def __init__(self, rpc: RpcClient, interval_sec: float = 2.0, quiet_after_block_sec: float = 0.0) -> None:
         self.rpc = rpc
         self.interval = interval_sec
+        self.quiet_after_block = quiet_after_block_sec
 
     async def heads(self) -> AsyncIterator[int]:
+        loop = asyncio.get_running_loop()
         last = -1
         while True:
             head = await self.rpc.block_number()  # внутри бесконечные ретраи
             if head > last:
                 last = head
+                seen_at = loop.time()
                 yield head
-            await asyncio.sleep(self.interval)
+                # пока основной цикл обрабатывал блок, часть паузы уже прошла
+                wait = seen_at + self.quiet_after_block - loop.time()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+            else:
+                await asyncio.sleep(self.interval)
 
 
 def _parse_number(value) -> int:

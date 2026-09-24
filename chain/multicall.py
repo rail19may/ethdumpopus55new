@@ -65,19 +65,25 @@ class Multicall:
         """
         out: list[CallResult] = []
         for i in range(0, len(calls), self.chunk_size):
-            chunk = calls[i:i + self.chunk_size]
-            try:
-                raw = await self.rpc.eth_call(self.address, encode_aggregate3(chunk), block)
-                results = decode_aggregate3(raw)
-                if len(results) != len(chunk):
-                    raise ValueError("multicall: число результатов не совпадает")
-            except (CallReverted, DecodingError, ValueError) as exc:
-                # aggregate3 с allowFailure не должен ревертить; если всё же упал (кончился газ)
-                # или вернул мусор (нет Multicall3 по адресу) — делаем вызовы по одному.
-                log.warning("multicall revert (%s), выполняю %d вызовов по одному", exc, len(chunk))
-                results = [await self.call_single(c, block) for c in chunk]
-            out.extend(results)
+            out.extend(await self._call_chunk(calls[i:i + self.chunk_size], block))
         return out
+
+    async def _call_chunk(self, chunk: Sequence[Call], block: BlockId) -> list[CallResult]:
+        if len(chunk) == 1:
+            return [await self.call_single(chunk[0], block)]
+        try:
+            raw = await self.rpc.eth_call(self.address, encode_aggregate3(chunk), block)
+            results = decode_aggregate3(raw)
+            if len(results) != len(chunk):
+                raise ValueError("multicall: число результатов не совпадает")
+            return results
+        except (CallReverted, DecodingError, ValueError) as exc:
+            # aggregate3 с allowFailure не должен ревертить; если всё же упал (какой-то вызов съел
+            # весь газ) или вернул мусор — делим пачку пополам: плохой вызов изолируется за
+            # ~2·log2(N) запросов вместо N запросов по одному.
+            log.debug("multicall из %d вызовов не удался (%s), делю пополам", len(chunk), exc)
+            mid = len(chunk) // 2
+            return await self._call_chunk(chunk[:mid], block) + await self._call_chunk(chunk[mid:], block)
 
     async def call_single(self, call: Call, block: BlockId = "latest") -> CallResult:
         try:

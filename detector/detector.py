@@ -8,6 +8,8 @@ from pricing.math import drop_pct
 
 from .window import PoolState, SwapRecord
 
+SECONDS_PER_BLOCK = 12
+
 
 @dataclass(slots=True)
 class Signal:
@@ -135,9 +137,16 @@ class DumpDetector:
 
     # --- обслуживание ------------------------------------------------------
     def gc(self, block: int) -> int:
-        """Удаляет состояния пулов без активности за state_gc_blocks (кроме активных кулдаунов)."""
+        """Удаляет состояния пулов без активности за state_gc_blocks.
+
+        Пул с алертом держим, пока не истёк его кулдаун (по числу блоков с последней активности,
+        ~12 с на блок), иначе после выгрузки по нему мог бы сразу прийти повторный алерт.
+        """
         limit = block - self.cfg.state_gc_blocks
-        stale = [p for p, st in self.states.items() if st.last_block < limit and st.last_alert_ts is None]
+        cooldown_blocks = self.cfg.cooldown_min * 60 / SECONDS_PER_BLOCK
+        stale = [p for p, st in self.states.items()
+                 if st.last_block < limit
+                 and (st.last_alert_ts is None or block - st.last_block > cooldown_blocks)]
         for p in stale:
             del self.states[p]
         return len(stale)

@@ -153,3 +153,13 @@ def test_gc():
     d.record_price("0xold", 10, 1.0)
     d.record_price("0xnew", 500, 1.0)
     assert d.gc(520) == 1 and "0xnew" in d.states and "0xold" not in d.states
+
+
+def test_gc_evicts_alerted_pool_after_cooldown():
+    d = det(state_gc_blocks=100, cooldown_min=30)  # 30 мин = 150 блоков
+    d.record_liquidity(P, 10, 100_000)
+    d.record_price(P, 10, 1.0)
+    d.record_price(P, 11, 0.5)
+    assert d.evaluate(P, 11, 1000) is not None
+    assert d.gc(120) == 0 and P in d.states   # неактивен >100 блоков, но кулдаун ещё идёт
+    assert d.gc(200) == 1 and P not in d.states

@@ -376,3 +376,22 @@ async def test_quiet_pool_dump_after_an_hour(tmp_path):
         assert quiet[0].liquidity_usd < 30_000
         if seen_before:
             chain.logs = [lg for lg in chain.logs if lg.tx_hash != tx(41)]
+
+
+async def test_garbage_fee_does_not_break_block(tmp_path):
+    """Контракт притворяется пулом V3/V2 и отдаёт fee() = 2**70: блок обрабатывается, пул — фейк."""
+    cfg = make_cfg(tmp_path)
+    chain = build_chain()
+    evil_v3 = "0x" + "e3" * 20
+    evil_v2 = "0x" + "e2" * 20
+    chain.pool(evil_v3, V3F, WETH, RUG, 2**70)
+    chain.pool(evil_v2, V2F, PEPE, WETH, 2**70)
+    chain.v3_swap(evil_v3, 1001, tx(50), 90, -E18, E18, RUG_SQRT_AFTER, 1, 0, ROUTER, ROUTER)
+    chain.v2_sync(evil_v2, 1001, tx(51), 91, E18, E18)
+    db = Database(cfg.sqlite_path)
+    engine = Engine(cfg, chain, db, CaptureNotifier(), mode="replay")
+    alerts = await run_replay(cfg, chain, engine, 1000, 1002)
+    assert [a.pool for a in alerts] == [V2_POOL, V3_POOL]  # настоящие дампы не потерялись
+    assert engine.pools.get(evil_v3).status == IGNORED_FAKE
+    assert engine.pools.get(evil_v2).status == IGNORED_FAKE and engine.pools.get(evil_v2).fee is None
+    assert {r["address"]: r["status"] for r in db.load_pools()}[evil_v3] == IGNORED_FAKE

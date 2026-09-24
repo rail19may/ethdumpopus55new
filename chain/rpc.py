@@ -7,8 +7,9 @@ import random
 from collections import OrderedDict
 from typing import Awaitable, Callable, Iterable, TypeVar
 
+import aiohttp
 from web3 import AsyncHTTPProvider, AsyncWeb3
-from web3.exceptions import ContractLogicError
+from web3.exceptions import ContractLogicError, ProviderConnectionError, RequestTimedOut, TooManyRequests
 
 from .events import RawLog
 
@@ -32,10 +33,28 @@ def backoff_delay(attempt: int, base: float, maximum: float) -> float:
     return delay * (0.8 + 0.4 * random.random())
 
 
+def is_transient(exc: BaseException) -> bool:
+    """Временный сбой (сеть, таймаут, 429, 5xx) — стоит ждать и повторять.
+
+    Всё остальное (4xx, ошибка JSON-RPC, нет такого блока у узла) считается постоянной ошибкой:
+    её повторяем ограниченно и отдаём наверх, где решают, пропустить ли блок.
+    """
+    if isinstance(exc, aiohttp.ClientResponseError):
+        return exc.status == 429 or exc.status >= 500
+    return isinstance(exc, (aiohttp.ClientConnectionError, aiohttp.ServerTimeoutError, asyncio.TimeoutError,
+                            TimeoutError, ConnectionError, ProviderConnectionError, RequestTimedOut,
+                            TooManyRequests))
+
+
 async def retry_async(what: str, fn: Callable[[], Awaitable[T]], *, attempts: int | None,
                       base_delay: float, max_delay: float,
-                      no_retry: tuple[type[BaseException], ...] = ()) -> T:
-    """Вызывает fn с ретраями. attempts=None — пытаться бесконечно."""
+                      no_retry: tuple[type[BaseException], ...] = (),
+                      transient_forever: bool = False) -> T:
+    """Вызывает fn с ретраями и экспоненциальной задержкой.
+
+    attempts=None — пытаться бесконечно. transient_forever=True — лимит attempts действует только
+    на постоянные ошибки, а временные (сеть лежит, 429) повторяются, пока не пройдут.
+    """
     attempt = 0
     while True:
         attempt += 1
@@ -46,7 +65,8 @@ async def retry_async(what: str, fn: Callable[[], Awaitable[T]], *, attempts: in
         except no_retry:
             raise
         except Exception as exc:  # noqa: BLE001 — любые ошибки RPC/сети
-            if attempts is not None and attempt >= attempts:
+            forever = transient_forever and is_transient(exc)
+            if attempts is not None and attempt >= attempts and not forever:
                 raise RpcError(f"{what}: {type(exc).__name__}: {exc}") from exc
             delay = backoff_delay(attempt, base_delay, max_delay)
             log.warning("RPC %s: ошибка (%s: %s), попытка %d, повтор через %.1f с",
@@ -85,9 +105,10 @@ class RpcClient:
             pass
 
     async def _retry(self, what: str, fn: Callable[[], Awaitable[T]], attempts: int | None = None,
-                     no_retry: tuple[type[BaseException], ...] = ()) -> T:
+                     no_retry: tuple[type[BaseException], ...] = (), transient_forever: bool = False) -> T:
         return await retry_async(what, fn, attempts=attempts, base_delay=self.retry_base,
-                                 max_delay=self.retry_max, no_retry=no_retry)
+                                 max_delay=self.retry_max, no_retry=no_retry,
+                                 transient_forever=transient_forever)
 
     async def block_number(self) -> int:
         return int(await self._retry("eth_blockNumber", lambda: self.w3.eth.block_number))
@@ -119,7 +140,10 @@ class RpcClient:
 
     async def eth_call(self, to: str, data: bytes, block: BlockId = "latest",
                        attempts: int | None = None) -> bytes:
-        """eth_call с ретраями. Revert -> CallReverted (без повторов)."""
+        """eth_call с ретраями. Revert -> CallReverted (без повторов).
+
+        Временные сбои повторяются до победного; постоянные ошибки (например, архивный узел
+        нужен, а его нет) — attempts раз, затем RpcError."""
         params = {"to": AsyncWeb3.to_checksum_address(to), "data": "0x" + data.hex()}
 
         async def _call() -> bytes:
@@ -131,7 +155,8 @@ class RpcClient:
                 raise
 
         return await self._retry(f"eth_call({to[:10]}…)", _call,
-                                 attempts=attempts or self.call_attempts, no_retry=(CallReverted,))
+                                 attempts=attempts or self.call_attempts, no_retry=(CallReverted,),
+                                 transient_forever=True)
 
     async def _get_logs_once(self, from_block: int, to_block: int, topics: Iterable[str]) -> list[RawLog]:
         params = {"fromBlock": from_block, "toBlock": to_block, "topics": [list(topics)]}
@@ -141,18 +166,20 @@ class RpcClient:
     async def get_logs(self, from_block: int, to_block: int, topics: Iterable[str]) -> list[RawLog]:
         """ОДИН eth_getLogs без фильтра по адресу на диапазон блоков.
 
-        Если провайдер отказывает на диапазоне (лимит на размер ответа/число логов),
-        диапазон делится пополам. Одиночный блок повторяется бесконечно с backoff'ом.
+        Временные сбои (сеть, 429) повторяются с backoff'ом, пока не пройдут. Постоянная ошибка на
+        диапазоне (лимит провайдера на число блоков/логов) — диапазон делится пополам. Постоянная
+        ошибка на одном блоке после call_attempts попыток отдаётся наверх как RpcError: основной
+        цикл решит, пропускать ли блок, и бот не зависнет навсегда.
         """
         topics = list(topics)
         if from_block == to_block:
             return await self._retry(f"eth_getLogs({from_block})",
-                                     lambda: self._get_logs_once(from_block, to_block, topics))
+                                     lambda: self._get_logs_once(from_block, to_block, topics),
+                                     attempts=self.call_attempts, transient_forever=True)
         try:
-            # без повторов: чаще всего это лимит провайдера на диапазон — сразу делим пополам
             return await self._retry(f"eth_getLogs({from_block}-{to_block})",
                                      lambda: self._get_logs_once(from_block, to_block, topics),
-                                     attempts=1)
+                                     attempts=1, transient_forever=True)
         except RpcError as exc:
             mid = (from_block + to_block) // 2
             log.debug("eth_getLogs %d-%d не удался (%s), делим диапазон", from_block, to_block, _short(exc, 120))

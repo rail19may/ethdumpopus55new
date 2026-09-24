@@ -12,6 +12,7 @@ import html
 import logging
 import signal
 import sys
+import time
 
 from chain.block_source import BlockSource, PollingBlockSource, WebSocketBlockSource
 from chain.rpc import RpcClient, backoff_delay
@@ -19,11 +20,13 @@ from config import Config, ConfigError, load_config
 from engine import Engine
 from logsafe import RedactingFormatter, secret_fragments
 from notify.format import fmt_usd
-from notify.notifiers import ConsoleNotifier, MultiNotifier, Notifier, TelegramNotifier
+from notify.notifiers import BackgroundNotifier, ConsoleNotifier, MultiNotifier, Notifier, TelegramNotifier
 from runner import LiveRunner, run_replay
 from storage.db import Database
 
 log = logging.getLogger("dumpbot")
+
+HEALTHY_RUN_SEC = 600  # после стольких секунд нормальной работы счётчик падений сбрасывается
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -74,7 +77,7 @@ def build_source(cfg: Config, rpc: RpcClient) -> BlockSource:
         return WebSocketBlockSource(cfg.rpc.ws_url, idle_timeout_sec=cfg.rpc.ws_idle_timeout_sec,
                                     retry_base=cfg.rpc.retry_base_delay_sec,
                                     retry_max=cfg.rpc.retry_max_delay_sec)
-    return PollingBlockSource(rpc, cfg.rpc.poll_interval_sec)
+    return PollingBlockSource(rpc, cfg.rpc.poll_interval_sec, cfg.rpc.poll_quiet_after_block_sec)
 
 
 def make_rpc(cfg: Config) -> RpcClient:
@@ -101,7 +104,8 @@ async def send_startup_message(cfg: Config, notifier: Notifier) -> None:
 async def live(cfg: Config, args: argparse.Namespace) -> None:
     db = Database(cfg.sqlite_path)
     rpc = make_rpc(cfg)
-    notifier = build_notifier(cfg, replay=False, no_telegram=args.no_telegram)
+    # в live отправка идёт в фоне, чтобы Telegram не тормозил обработку блоков
+    notifier = BackgroundNotifier(build_notifier(cfg, replay=False, no_telegram=args.no_telegram))
     if cfg.telegram.startup_message:
         await send_startup_message(cfg, notifier)
     attempt = 0
@@ -110,11 +114,14 @@ async def live(cfg: Config, args: argparse.Namespace) -> None:
             # Супервизор: любая непредвиденная ошибка -> пауза и перезапуск цикла с сохранённого блока.
             engine = Engine(cfg, rpc, db, notifier, mode="live")
             runner = LiveRunner(cfg, rpc, db, engine, build_source(cfg, rpc))
+            started = time.monotonic()
             try:
                 await runner.run()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
+                if time.monotonic() - started > HEALTHY_RUN_SEC:
+                    attempt = 0  # до падения бот долго работал нормально — паузу не наращиваем
                 attempt += 1
                 delay = backoff_delay(attempt, cfg.rpc.retry_base_delay_sec, cfg.rpc.retry_max_delay_sec)
                 log.exception("основной цикл упал, перезапуск через %.1f с", delay)
@@ -165,6 +172,9 @@ def main(argv: list[str] | None = None) -> int:
         loop.run_until_complete(task)
     except (asyncio.CancelledError, KeyboardInterrupt):
         log.info("остановлено")
+    except Exception:  # noqa: BLE001 — через логгер, чтобы ключ RPC из текста ошибки был замаскирован
+        log.exception("бот остановлен из-за ошибки")
+        return 1
     finally:
         loop.close()
     return 0

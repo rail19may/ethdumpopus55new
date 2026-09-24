@@ -10,7 +10,7 @@ from eth_abi import encode
 
 from chain.block_source import PollingBlockSource, WebSocketBlockSource
 from chain.events import ALL_TOPICS, V2_SYNC
-from chain.multicall import Call, Multicall, encode_call
+from chain.multicall import MULTICALL3_ADDRESS, Call, Multicall, encode_call
 from chain.rpc import CallReverted, RpcClient, RpcError
 from notify.notifiers import TelegramNotifier
 
@@ -28,6 +28,7 @@ class FakeNode:
     def __init__(self) -> None:
         self.head = 0x100
         self.fail_next = 0
+        self.fail_status = 503
         self.max_range = 1000
         self.requests: list[dict] = []
 
@@ -47,6 +48,8 @@ class FakeNode:
             data = params[0]["data"]
             if data.startswith("0x" + encode_call("fail()").hex()):
                 raise ValueError("execution reverted")
+            if data.startswith("0x" + encode_call("archive()").hex()):
+                raise ValueError("missing trie node")
             return "0x" + encode(["uint256"], [42]).hex()
         if method == "eth_getBlockByNumber":
             return {"number": params[0], "timestamp": hex(1_700_000_000), "hash": "0x" + "22" * 32,
@@ -58,7 +61,7 @@ class FakeNode:
         self.requests.append(body)
         if self.fail_next > 0:
             self.fail_next -= 1
-            return web.Response(status=503, text="overloaded")
+            return web.Response(status=self.fail_status, text="error")
         try:
             res = {"jsonrpc": "2.0", "id": body["id"], "result": self.result(body["method"], body["params"])}
         except ValueError as exc:
@@ -100,10 +103,30 @@ async def test_http_retries_after_errors(node):
     rpc = client(node)
     node.fail_next = 4  # 503 четыре раза подряд — бесконечные ретраи блок-номера переживут
     assert await rpc.block_number() == 0x100
+    # временные сбои (503/429) eth_call тоже переживает, хотя call_attempts=3
     node.fail_next = 10
-    with pytest.raises(RpcError):  # eth_call ограничен call_attempts
-        await rpc.eth_call("0x" + "cd" * 20, encode_call("x()"))
+    assert int.from_bytes(await rpc.eth_call("0x" + "cd" * 20, encode_call("x()")), "big") == 42
+    node.fail_status, node.fail_next = 429, 5
+    assert int.from_bytes(await rpc.eth_call("0x" + "cd" * 20, encode_call("x()")), "big") == 42
+    # постоянная ошибка (нет архивного состояния) — call_attempts попыток, затем RpcError
+    with pytest.raises(RpcError):
+        await rpc.eth_call("0x" + "cd" * 20, encode_call("archive()"))
+    # и постоянная HTTP-ошибка на одном блоке eth_getLogs — тоже RpcError, а не вечный цикл
+    node.fail_status, node.fail_next = 400, 100
+    with pytest.raises(RpcError):
+        await rpc.get_logs(7, 7, ALL_TOPICS)
     node.fail_next = 0
+    await rpc.close()
+
+
+async def test_get_logs_transient_error_does_not_split(node):
+    rpc = client(node)
+    node.fail_status, node.fail_next = 429, 3  # rate limit на диапазоне — ждём, а не дробим
+    logs = await rpc.get_logs(1, 8, ALL_TOPICS)
+    assert len(logs) == 8
+    ranges = [(r["params"][0]["fromBlock"], r["params"][0]["toBlock"]) for r in node.requests
+              if r["method"] == "eth_getLogs"]
+    assert ranges == [("0x1", "0x8")] * 4
     await rpc.close()
 
 
@@ -206,3 +229,73 @@ async def test_telegram_notifier():
         await tg.close()
         await runner.cleanup()
     assert sent == [{"chat_id": "-100", "text": "<b>hi</b>", "parse_mode": "HTML", "disable_web_page_preview": True}]
+
+
+async def test_polling_quiet_period_saves_calls(node):
+    """После нового блока источник молчит quiet-секунд и не долбит eth_blockNumber."""
+    rpc = client(node)
+    src = PollingBlockSource(rpc, interval_sec=0.02, quiet_after_block_sec=0.3)
+    gen = src.heads()
+    assert await gen.__anext__() == 0x100
+    before = sum(1 for r in node.requests if r["method"] == "eth_blockNumber")
+    node.head = 0x101
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    assert await asyncio.wait_for(gen.__anext__(), 2) == 0x101
+    assert loop.time() - t0 >= 0.25  # тишина соблюдена
+    calls = sum(1 for r in node.requests if r["method"] == "eth_blockNumber") - before
+    assert calls == 1  # новый блок уже был — хватило одного запроса после паузы
+    await gen.aclose()
+    await rpc.close()
+
+
+async def test_multicall_bisects_bad_call():
+    """Один «прожорливый» вызов роняет aggregate3 — остальные результаты не теряются,
+    а запросов гораздо меньше, чем по одному на вызов."""
+    from eth_abi import decode as abi_decode
+
+    class Rpc:
+        def __init__(self):
+            self.calls = 0
+
+        async def eth_call(self, to, data, block="latest", attempts=None):
+            self.calls += 1
+            if to.lower() == MULTICALL3_ADDRESS:
+                (items,) = abi_decode(["(address,bool,bytes)[]"], data[4:])
+                if any(cd == b"gas!" for _, _, cd in items):
+                    raise CallReverted("out of gas")
+                return encode(["(bool,bytes)[]"], [[(True, cd) for _, _, cd in items]])
+            if data == b"gas!":
+                raise CallReverted("out of gas")
+            return data
+
+    rpc = Rpc()
+    mc = Multicall(rpc, chunk_size=64)
+    calls = [Call("0x" + "cd" * 20, bytes([i])) for i in range(64)]
+    calls[37] = Call("0x" + "cd" * 20, b"gas!")
+    res = await mc.call(calls)
+    assert [r.success for r in res] == [i != 37 for i in range(64)]
+    assert res[5].data == bytes([5])
+    assert rpc.calls <= 2 * 7 + 1  # ~2·log2(64), а не 64
+
+
+async def test_background_notifier_does_not_block():
+    from notify.notifiers import BackgroundNotifier, Notifier
+
+    gate = asyncio.Event()
+    sent = []
+
+    class Slow(Notifier):
+        async def send(self, alert):
+            await gate.wait()
+            sent.append(alert)
+
+    bg = BackgroundNotifier(Slow(), drain_timeout=2)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    await bg.send("a1")
+    await bg.send("a2")
+    assert loop.time() - t0 < 0.1 and sent == []  # send() вернулся сразу
+    gate.set()
+    await bg.close()                                # close() дожидается отправки очереди
+    assert sent == ["a1", "a2"]
