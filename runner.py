@@ -14,6 +14,8 @@ from storage.db import Database
 
 log = logging.getLogger(__name__)
 
+HEARTBEAT_BLOCKS = 25  # строка «работаю» в логе примерно раз в 5 минут
+
 
 class LiveRunner:
     def __init__(self, cfg: Config, rpc: RpcClient, db: Database, engine: Engine, source: BlockSource) -> None:
@@ -82,6 +84,11 @@ class LiveRunner:
         self.last = block
         self._failures.pop(block, None)
         self.db.set_last_block(block)
+        if block % HEARTBEAT_BLOCKS == 0:
+            tracked = sum(1 for p in self.engine.pools.pools.values() if p.tracked)
+            eth = self.engine.eth.eth_usd
+            log.info("работаю: блок %d, отслеживается пулов %d, ETH $%s", block, tracked,
+                     f"{eth:,.2f}" if eth else "?")
 
 
 async def run_replay(cfg: Config, rpc: RpcClient, engine: Engine, from_block: int, to_block: int) -> list[Alert]:
