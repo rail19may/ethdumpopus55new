@@ -309,3 +309,26 @@ def test_message_prefix(tmp_path):
     assert html.split("\n")[1].startswith("🔻 <b>ДАМП −30.0%</b>")
     assert format_text(a, "🤖 Claude нашёл").startswith("🤖 Claude нашёл\n🔻 ДАМП")
     assert not format_html(a).startswith("<b>🤖")
+
+
+async def test_startup_message(tmp_path):
+    from main import send_startup_message
+    from notify.notifiers import MultiNotifier, TelegramNotifier
+
+    class FakeTg(TelegramNotifier):
+        def __init__(self):
+            super().__init__("T", "C")
+            self.texts = []
+
+        async def send_text(self, text):
+            self.texts.append(text)
+            return True
+
+    cfg = make_cfg(tmp_path)
+    tg = FakeTg()
+    await send_startup_message(cfg, MultiNotifier([CaptureNotifier(), tg]))
+    assert len(tg.texts) == 1
+    text = tg.texts[0]
+    assert text.startswith("🤖 <b>Claude dump-бот запущен</b>")
+    assert "≥20%" in text and "$50,000" in text and "«🤖 Claude нашёл»" in text
+    await tg.close()

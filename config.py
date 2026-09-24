@@ -67,6 +67,7 @@ class TelegramCfg:
     chat_id: str | None
     timeout_sec: float = 15.0
     message_prefix: str = ""  # первая строка каждого сообщения, напр. «🤖 Claude нашёл»
+    startup_message: bool = True  # при запуске прислать в чат «бот запущен»
 
 
 @dataclass(frozen=True)
@@ -177,6 +178,7 @@ def load_config(path: str | os.PathLike = "config.yaml", env_file: str | None = 
         chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip() or None,
         timeout_sec=float(tg_sec.get("timeout_sec", 15.0)),
         message_prefix=str(tg_sec.get("message_prefix") or "").strip(),
+        startup_message=bool(tg_sec.get("startup_message", True)),
     )
 
     storage = _section(raw, "storage")

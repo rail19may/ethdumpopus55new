@@ -122,6 +122,7 @@ TELEGRAM_CHAT_ID=-1001234567890
 | `detector.cooldown_min` | `30` | COOLDOWN_MIN |
 | `detector.rugpull_liquidity_drop_pct` | `50` | порог падения ликвидности для пометки рагпула |
 | `detector.v3_liquidity_refresh_blocks` | `10` | `balanceOf` V3-пула не чаще раза в N блоков |
+| `telegram.startup_message` | `true` | при каждом запуске присылать в чат «бот запущен» (проверка, что Telegram настроен) |
 | `telegram.message_prefix` | `🤖 Claude нашёл` | первая строка каждого сообщения, чтобы отличать этот бот от других в том же чате (пустая строка — без подписи) |
 | `storage.sqlite_path` | `data/bot.sqlite3` | база SQLite |
 

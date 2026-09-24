@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import logging
 import signal
 import sys
@@ -82,10 +83,27 @@ def make_rpc(cfg: Config) -> RpcClient:
                      call_attempts=cfg.rpc.call_max_attempts)
 
 
+async def send_startup_message(cfg: Config, notifier: Notifier) -> None:
+    tg = [n for n in getattr(notifier, "notifiers", [notifier]) if isinstance(n, TelegramNotifier)]
+    if not tg:
+        return
+    d = cfg.detector
+    lines = ["🤖 <b>Claude dump-бот запущен</b>",
+             "Слежу за Uniswap V2/V3 (Ethereum).",
+             f"Сигнал: падение ≥{d.drop_pct:g}% за {d.window_blocks} бл., ликвидность ≥${d.min_liquidity_usd:,.0f}, "
+             f"кулдаун {d.cooldown_min:g} мин."]
+    if cfg.telegram.message_prefix:
+        lines.append(f"Мои уведомления начинаются со строки «{html.escape(cfg.telegram.message_prefix)}».")
+    if await tg[0].send_text("\n".join(lines)):
+        log.info("Telegram: стартовое сообщение отправлено")
+
+
 async def live(cfg: Config, args: argparse.Namespace) -> None:
     db = Database(cfg.sqlite_path)
     rpc = make_rpc(cfg)
     notifier = build_notifier(cfg, replay=False, no_telegram=args.no_telegram)
+    if cfg.telegram.startup_message:
+        await send_startup_message(cfg, notifier)
     attempt = 0
     try:
         while True:
