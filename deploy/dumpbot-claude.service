@@ -1,0 +1,26 @@
+# systemd-сервис для бота. Можно ставить рядом с другими ботами на том же сервере:
+# у этого своё имя сервиса, своя папка, своё venv и своя база SQLite.
+#
+# Установка (пути поправьте под себя):
+#   sudo cp deploy/dumpbot-claude.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dumpbot-claude
+# Логи:
+#   journalctl -u dumpbot-claude -f
+
+[Unit]
+Description=Claude dump bot (Uniswap V2/V3 dump alerts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dumpbot
+WorkingDirectory=/opt/dumpbot-claude
+ExecStart=/opt/dumpbot-claude/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -53,6 +53,9 @@ detector:
 telegram:
   enabled: true                     # TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID задаются в .env
   timeout_sec: 15
+  # Первая строка каждого сообщения — чтобы отличать этот бот от других,
+  # пишущих через того же Telegram-бота в тот же чат. Пустая строка — без подписи.
+  message_prefix: "🤖 Claude нашёл"
 
 storage:
   sqlite_path: data/bot.sqlite3

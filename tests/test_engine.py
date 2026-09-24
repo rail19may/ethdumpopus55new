@@ -294,3 +294,18 @@ async def test_live_first_sight_v3_rugpull_uses_previous_block_state(tmp_path):
     assert len(notifier.alerts) == 1
     a = notifier.alerts[0]
     assert a.pool == V3_POOL and a.rugpull and a.liquidity_max_usd == pytest.approx(2 * 50 * 2000)
+
+
+def test_message_prefix(tmp_path):
+    from notify.format import Alert
+    cfg = make_cfg(tmp_path)
+    assert cfg.telegram.message_prefix == "🤖 Claude нашёл"
+    a = Alert(mode="live", block=1, timestamp=None, pool=V2_POOL, dex="Uniswap V2", token=PEPE,
+              token_symbol="PEPE", token_name="Pepe", quote_symbol="WETH", drop_pct=30.0, price_before=1.0,
+              price_after=0.7, price_before_usd=2000.0, price_after_usd=1400.0, liquidity_usd=100_000.0,
+              liquidity_max_usd=100_000.0, rugpull=False, main_tx=None, seller=None, sell_usd=None)
+    html = format_html(a, cfg.telegram.message_prefix)
+    assert html.split("\n")[0] == "<b>🤖 Claude нашёл</b>"
+    assert html.split("\n")[1].startswith("🔻 <b>ДАМП −30.0%</b>")
+    assert format_text(a, "🤖 Claude нашёл").startswith("🤖 Claude нашёл\n🔻 ДАМП")
+    assert not format_html(a).startswith("<b>🤖")

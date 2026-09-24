@@ -22,18 +22,21 @@ class Notifier(abc.ABC):
 
 
 class ConsoleNotifier(Notifier):
-    def __init__(self, stream=None) -> None:
+    def __init__(self, stream=None, prefix: str = "") -> None:
         self.stream = stream or sys.stdout
+        self.prefix = prefix
 
     async def send(self, alert: Alert) -> None:
         sep = "=" * 72
-        print(f"\n{sep}\n{format_text(alert)}\n{sep}", file=self.stream, flush=True)
+        print(f"\n{sep}\n{format_text(alert, self.prefix)}\n{sep}", file=self.stream, flush=True)
 
 
 class TelegramNotifier(Notifier):
     API = "https://api.telegram.org"
 
-    def __init__(self, bot_token: str, chat_id: str, timeout: float = 15.0, attempts: int = 4) -> None:
+    def __init__(self, bot_token: str, chat_id: str, timeout: float = 15.0, attempts: int = 4,
+                 prefix: str = "") -> None:
+        self.prefix = prefix
         self.url = f"{self.API}/bot{bot_token}/sendMessage"
         self.chat_id = chat_id
         self.timeout = aiohttp.ClientTimeout(total=timeout)
@@ -75,7 +78,7 @@ class TelegramNotifier(Notifier):
         return False
 
     async def send(self, alert: Alert) -> None:
-        await self.send_text(format_html(alert))
+        await self.send_text(format_html(alert, self.prefix))
 
     async def close(self) -> None:
         if self._session is not None and not self._session.closed:

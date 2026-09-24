@@ -94,7 +94,7 @@ def _time(ts: int | None) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def format_html(a: Alert) -> str:
+def format_html(a: Alert, prefix: str = "") -> str:
     e = html.escape
     lk = links(a)
     lines = [f"🔻 <b>ДАМП −{a.drop_pct:.1f}%</b> · <b>{e(a.token_symbol)}</b> ({e(a.token_name)})"]
@@ -121,15 +121,17 @@ def format_html(a: Alert) -> str:
         link_parts.append(f"<a href=\"{lk['etherscan_tx']}\">Etherscan tx</a>")
     link_parts.append(f"<a href=\"{lk['dexscreener']}\">DexScreener</a>")
     lines.append("🔗 " + " | ".join(link_parts))
+    if prefix:
+        lines.insert(0, f"<b>{e(prefix)}</b>")
     return "\n".join(lines)
 
 
 _TAG = re.compile(r"<[^>]+>")
 
 
-def format_text(a: Alert) -> str:
+def format_text(a: Alert, prefix: str = "") -> str:
     """Простой текст для консоли: тот же формат без HTML, со ссылками целиком."""
-    body = format_html(a).split("\n")[:-1]  # без строки со ссылками-якорями
+    body = format_html(a, prefix).split("\n")[:-1]  # без строки со ссылками-якорями
     text = html.unescape(_TAG.sub("", "\n".join(body)))
     lk = links(a)
     text += f"\nEtherscan токен: {lk['etherscan_token']}"

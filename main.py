@@ -53,11 +53,12 @@ def setup_logging(level: str) -> None:
 
 
 def build_notifier(cfg: Config, replay: bool, no_telegram: bool) -> Notifier:
-    notifiers: list[Notifier] = [ConsoleNotifier()]
+    notifiers: list[Notifier] = [ConsoleNotifier(prefix=cfg.telegram.message_prefix)]
     if replay or no_telegram or not cfg.telegram.enabled:
         return MultiNotifier(notifiers)
     if cfg.telegram.bot_token and cfg.telegram.chat_id:
-        notifiers.append(TelegramNotifier(cfg.telegram.bot_token, cfg.telegram.chat_id, cfg.telegram.timeout_sec))
+        notifiers.append(TelegramNotifier(cfg.telegram.bot_token, cfg.telegram.chat_id,
+                                          cfg.telegram.timeout_sec, prefix=cfg.telegram.message_prefix))
         log.info("Telegram-уведомления включены (чат %s)", cfg.telegram.chat_id)
     else:
         log.warning("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID не заданы — уведомления только в консоль")

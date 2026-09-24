@@ -122,6 +122,7 @@ TELEGRAM_CHAT_ID=-1001234567890
 | `detector.cooldown_min` | `30` | COOLDOWN_MIN |
 | `detector.rugpull_liquidity_drop_pct` | `50` | порог падения ликвидности для пометки рагпула |
 | `detector.v3_liquidity_refresh_blocks` | `10` | `balanceOf` V3-пула не чаще раза в N блоков |
+| `telegram.message_prefix` | `🤖 Claude нашёл` | первая строка каждого сообщения, чтобы отличать этот бот от других в том же чате (пустая строка — без подписи) |
 | `storage.sqlite_path` | `data/bot.sqlite3` | база SQLite |
 
 Адреса фабрик сверены с официальной документацией Uniswap (Ethereum deployments):
@@ -159,6 +160,33 @@ DEX: Uniswap V2 · пул 0x0101010101010101010101010101010101010101
 🔗 Etherscan токен | Etherscan tx | DexScreener
 ```
 
+## Установка на сервер рядом с другим ботом
+
+Бот можно ставить на сервер, где уже работает другой бот (например, другой дамп-бот). Они не мешают
+друг другу, если у этого бота своя папка, своё venv, своя база SQLite и своё имя сервиса:
+
+```bash
+sudo mkdir -p /opt/dumpbot-claude && sudo chown $USER /opt/dumpbot-claude
+git clone -b claude/amazing-tesla-ifpw97 https://github.com/rail19may/ethdumpopus55new /opt/dumpbot-claude
+cd /opt/dumpbot-claude
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env && nano .env        # RPC и Telegram
+.venv/bin/python main.py --no-telegram   # проверка: ждём строки «цена ETH: $…», Ctrl+C
+```
+
+Затем запустите бот как сервис по примеру `deploy/dumpbot-claude.service` (в файле есть команды
+установки). Поле `User=` поправьте под своего пользователя.
+
+**Один Telegram-бот на двоих.** В `.env` можно указать тот же `TELEGRAM_BOT_TOKEN` и тот же
+`TELEGRAM_CHAT_ID`, что у уже работающего бота. Этот бот только отправляет сообщения (`sendMessage`)
+и никогда не читает обновления (`getUpdates` / webhook). Поэтому с ботом, который принимает команды
+через тот же токен, конфликта нет. Каждое сообщение начинается со строки `telegram.message_prefix`
+(по умолчанию «🤖 Claude нашёл»), так что в общем чате видно, какой бот нашёл дамп.
+
+**RPC.** Если оба бота ходят в один RPC-ключ, нагрузка складывается. Этот бот делает один
+`eth_getLogs` на блок плюс пакетные `eth_call` (Multicall3) для новых пулов и ликвидности V3. Проверьте
+лимиты тарифа провайдера или выдайте боту отдельный ключ.
+
 ## SQLite
 
 - `pools`: кэш пулов (`status`: `tracked`, `quote_pair`, `ignored_factory`, `ignored_fake`,
@@ -191,6 +219,7 @@ pytest
 
 ```
 main.py            запуск, CLI
+deploy/            пример systemd-сервиса
 config.py          загрузка config.yaml + .env
 engine.py          обработка блока: логи → пулы → цены → детектор → алерты
 runner.py          live-цикл (догонка, ретраи, состояние) и реплей
