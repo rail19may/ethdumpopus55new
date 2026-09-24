@@ -179,6 +179,14 @@ cp .env.example .env && nano .env        # RPC и Telegram
 установки). Сервис работает под отдельным временным пользователем, секреты берёт из
 `/opt/dumpbot-claude/.env`, а базу хранит в `/var/lib/dumpbot-claude/data/`.
 
+**Обновление.** Чтобы сервер мог скачивать обновления из приватного репозитория, добавьте ему
+deploy key: GitHub → Settings → Deploy keys, доступ только на чтение. После этого бот обновляется
+одной командой (правки в `config.yaml` сохраняются):
+
+```bash
+bash /opt/dumpbot-claude/deploy/update.sh
+```
+
 **Один Telegram-бот на двоих.** В `.env` можно указать тот же `TELEGRAM_BOT_TOKEN` и тот же
 `TELEGRAM_CHAT_ID`, что у уже работающего бота. Этот бот только отправляет сообщения (`sendMessage`)
 и никогда не читает обновления (`getUpdates` / webhook). Поэтому с ботом, который принимает команды
@@ -221,7 +229,7 @@ pytest
 
 ```
 main.py            запуск, CLI
-deploy/            пример systemd-сервиса
+deploy/            systemd-сервис и скрипт обновления update.sh
 config.py          загрузка config.yaml + .env
 engine.py          обработка блока: логи → пулы → цены → детектор → алерты
 runner.py          live-цикл (догонка, ретраи, состояние) и реплей
