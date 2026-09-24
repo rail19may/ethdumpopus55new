@@ -1,26 +1,38 @@
 # systemd-сервис для бота. Можно ставить рядом с другими ботами на том же сервере:
 # у этого своё имя сервиса, своя папка, своё venv и своя база SQLite.
 #
-# Установка (пути поправьте под себя):
-#   sudo cp deploy/dumpbot-claude.service /etc/systemd/system/
-#   sudo systemctl daemon-reload
-#   sudo systemctl enable --now dumpbot-claude
+# Код — в /opt/dumpbot-claude, секреты — в /opt/dumpbot-claude/.env (systemd читает их сам),
+# база SQLite — в /var/lib/dumpbot-claude/data/ (бот работает под отдельным временным пользователем
+# и больше никуда писать не может).
+#
+# Установка:
+#   cp /opt/dumpbot-claude/deploy/dumpbot-claude.service /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now dumpbot-claude
 # Логи:
 #   journalctl -u dumpbot-claude -f
 
 [Unit]
 Description=Claude dump bot (Uniswap V2/V3 dump alerts)
-After=network-online.target
 Wants=network-online.target
+After=network-online.target
 
 [Service]
-Type=simple
-User=dumpbot
-WorkingDirectory=/opt/dumpbot-claude
-ExecStart=/opt/dumpbot-claude/.venv/bin/python main.py
+Type=exec
+DynamicUser=yes
+StateDirectory=dumpbot-claude
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/dumpbot-claude
+EnvironmentFile=/opt/dumpbot-claude/.env
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/dumpbot-claude/.venv/bin/python /opt/dumpbot-claude/main.py --config /opt/dumpbot-claude/config.yaml --env none
 Restart=always
-RestartSec=10
-Environment=PYTHONUNBUFFERED=1
+RestartSec=15
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
 
 [Install]
 WantedBy=multi-user.target

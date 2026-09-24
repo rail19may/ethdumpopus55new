@@ -175,7 +175,8 @@ cp .env.example .env && nano .env        # RPC и Telegram
 ```
 
 Затем запустите бот как сервис по примеру `deploy/dumpbot-claude.service` (в файле есть команды
-установки). Поле `User=` поправьте под своего пользователя.
+установки). Сервис работает под отдельным временным пользователем, секреты берёт из
+`/opt/dumpbot-claude/.env`, а базу хранит в `/var/lib/dumpbot-claude/data/`.
 
 **Один Telegram-бот на двоих.** В `.env` можно указать тот же `TELEGRAM_BOT_TOKEN` и тот же
 `TELEGRAM_CHAT_ID`, что у уже работающего бота. Этот бот только отправляет сообщения (`sendMessage`)
