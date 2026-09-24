@@ -1,0 +1,61 @@
+# Конфигурация бота-уведомлялки о дампах токенов.
+# Секреты (RPC URL, токен Telegram) — только в .env, см. .env.example.
+
+rpc:
+  block_source: polling        # polling | websocket (для websocket нужен RPC_WS_URL)
+  poll_interval_sec: 2         # период опроса eth_blockNumber в режиме polling
+  ws_idle_timeout_sec: 60      # переподключение WS, если за это время не пришло ни одного блока
+  request_timeout_sec: 30
+  confirmations: 0             # обрабатывать блок head - confirmations
+  max_lag_blocks: 5            # если отстали больше чем на N блоков — догоняем пачками
+  catchup_batch_blocks: 20     # размер пачки eth_getLogs при догонке и в реплее
+  max_catchup_blocks: 2000     # при старте не догонять глубже (0 = без ограничения)
+  retry_base_delay_sec: 1      # экспоненциальная задержка ретраев RPC: 1, 2, 4, ... сек
+  retry_max_delay_sec: 60
+  call_max_attempts: 5         # попыток для eth_call (потом вызов считается неуспешным)
+  multicall_chunk: 150         # вызовов в одном Multicall3.aggregate3
+  max_block_failures: 10       # после стольких неудачных попыток блок пропускается
+
+# Разрешённые фабрики. Пулы других фабрик (форки, фейки) игнорируются.
+# Адреса сверены с docs.uniswap.org (Ethereum mainnet deployments).
+factories:
+  - name: Uniswap V2
+    address: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
+    version: v2
+  - name: Uniswap V3
+    address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+    version: v3
+
+# Котируемые токены. usd: eth — цена берётся из пула ETH/USD, число — фиксированная цена в USD.
+quote_tokens:
+  - symbol: WETH
+    address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+    usd: eth
+  - symbol: USDC
+    address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    usd: 1.0
+  - symbol: USDT
+    address: "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+    usd: 1.0
+
+# Пул, из которого берётся цена ETH в USD (Uniswap V3 WETH/USDC 0.05%).
+eth_usd_pool: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"
+
+detector:
+  window_blocks: 5                  # WINDOW_BLOCKS
+  drop_pct: 20                      # DROP_PCT
+  min_liquidity_usd: 50000          # MIN_LIQUIDITY_USD
+  cooldown_min: 30                  # COOLDOWN_MIN
+  rugpull_liquidity_drop_pct: 50    # пометка «возможный рагпул»: Burn в окне + падение ликвидности на X%
+  v3_liquidity_refresh_blocks: 10   # balanceOf для V3-пула не чаще раза в N блоков
+  state_gc_blocks: 5000             # выгружать из памяти окна пулов без активности N блоков
+
+telegram:
+  enabled: true                     # TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID задаются в .env
+  timeout_sec: 15
+
+storage:
+  sqlite_path: data/bot.sqlite3
+
+logging:
+  level: INFO
