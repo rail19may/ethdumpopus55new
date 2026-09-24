@@ -181,6 +181,13 @@ class Engine:
                     pre = v2_price_from_reserves(r0, r1, d0, d1, t0)
                     if pre:
                         self.detector.record_pre_price(pool, ev.block, pre)
+                    # и ликвидность до свопа: продажа уменьшает резерв котируемого токена, и если бот
+                    # видит пул впервые (например, после часа без сделок и перезапуска), иначе он знал бы
+                    # только ликвидность «после» и мог отсечь дамп по порогу MIN_LIQUIDITY_USD
+                    if quote_usd:
+                        reserve_q = r1 if t0 else r0
+                        self.detector.record_pre_liquidity(pool, ev.block,
+                                                           liquidity_usd(scale_amount(reserve_q, dq), quote_usd))
                 post = v2_price_from_reserves(sync.reserve0, sync.reserve1, d0, d1, t0)
             target_in = ev.amount0_in if t0 else ev.amount1_in
             quote_out = ev.amount1_out if t0 else ev.amount0_out

@@ -59,6 +59,10 @@ class DumpDetector:
         if st.price.current is None:
             st.price.current = price
 
+    def record_pre_liquidity(self, pool: str, block: int, usd: float) -> None:
+        """Ликвидность непосредственно перед свопом (из восстановленных резервов V2)."""
+        self._touch(pool, block).liquidity.add_pre(block, usd)
+
     def record_initial_price(self, pool: str, block: int, price: float) -> None:
         """Цена на конец предыдущего блока (slot0 при первой встрече пула)."""
         st = self.state(pool)

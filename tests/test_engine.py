@@ -175,7 +175,8 @@ async def test_replay_finds_dumps(tmp_path):
     assert v2.price_after == pytest.approx((100 / 1.4) / 1_400_000)
     assert v2.drop_pct == pytest.approx((1 - 1 / 1.4**2) * 100)
     assert v2.price_before_usd == pytest.approx(1e-4 * 2100)
-    assert v2.liquidity_max_usd == pytest.approx(2 * 100 * 2000)  # Sync в блоке 1000 был до свопа ETH
+    # максимум — ликвидность прямо перед дампом (блок 1001), уже по новому курсу ETH $2100
+    assert v2.liquidity_max_usd == pytest.approx(2 * 100 * 2100)
     assert v2.main_tx == tx(10) and v2.seller == SELLER
     assert v2.sell_usd == pytest.approx((100 - 100 / 1.4) * 2100, rel=1e-6)
     assert not v2.rugpull
@@ -332,3 +333,46 @@ async def test_startup_message(tmp_path):
     assert text.startswith("🤖 <b>Claude dump-бот запущен</b>")
     assert "≥20%" in text and "$50,000" in text and "«🤖 Claude нашёл»" in text
     await tg.close()
+
+
+async def test_quiet_pool_dump_after_an_hour(tmp_path):
+    """Час без сделок, потом дамп -50%: сигнал есть и когда бот видел пул раньше, и когда видит впервые.
+
+    Пул на $40k до дампа; после продажи ликвидность ~$28k — ниже порога $30k, поэтому порог
+    должен сравниваться с ликвидностью ДО свопа (восстановленной из Sync+Swap).
+    """
+    cfg = make_cfg(tmp_path)
+    cfg = dataclasses.replace(cfg, detector=dataclasses.replace(cfg.detector, min_liquidity_usd=30_000))
+    chain = build_chain()
+    x, y = 1_000_000 * E18, 10 * E18          # 10 WETH * $2000 * 2 = $40k
+    quiet_pool = "0x" + "08" * 20
+    token = "0x" + "a8" * 20
+    chain.token(token, "QUIET", "Quiet", 18)
+    chain.pool(quiet_pool, V2F, token, WETH)
+    chain.v2_factory(V2F, {(PEPE, WETH): V2_POOL, (token, WETH): quiet_pool})
+    sell = int(x * (2**0.5 - 1))              # цена падает в 2 раза
+    x2 = x + sell
+    y2 = x * y // x2
+    chain.v2_sync(quiet_pool, 1300, tx(40), 0, x2, y2)
+    chain.v2_swap(quiet_pool, 1300, tx(40), 1, sell, 0, 0, y - y2, ROUTER, ROUTER)
+    chain.head = 1300
+
+    for seen_before in (True, False):
+        db = Database(str(tmp_path / f"q{seen_before}.sqlite3"))
+        notifier = CaptureNotifier()
+        engine = Engine(cfg, chain, db, notifier, mode="live")
+        if seen_before:
+            chain.v2_sync(quiet_pool, 1000, tx(41), 50, x, y)   # последняя сделка — час назад
+            db.set_last_block(999)
+        else:
+            db.set_last_block(1299)                               # бот стартовал уже после неё
+        await LiveRunner(cfg, chain, db, engine, ListSource([1300])).run()
+        quiet = [a for a in notifier.alerts if a.pool == quiet_pool]
+        assert len(quiet) == 1, seen_before
+        assert quiet[0].drop_pct == pytest.approx(50.0, rel=1e-3)
+        # $40k по курсу ETH $2000 (стартовый slot0) или $42k по $2100 (после свопа ETH в блоке 1000)
+        assert quiet[0].liquidity_max_usd == pytest.approx(2 * 10 * engine.eth.eth_usd, rel=1e-6)
+        assert quiet[0].liquidity_max_usd >= 40_000 * 0.999
+        assert quiet[0].liquidity_usd < 30_000
+        if seen_before:
+            chain.logs = [lg for lg in chain.logs if lg.tx_hash != tx(41)]
