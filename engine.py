@@ -23,8 +23,21 @@ from storage.db import Database
 log = logging.getLogger(__name__)
 
 _SLOT0 = encode_call("slot0()")
+_GET_RESERVES = encode_call("getReserves()")
 SECONDS_PER_BLOCK = 12
 GC_EVERY_BLOCKS = 1000
+
+
+class _BlockState:
+    """Состояние пулов внутри обрабатываемого блока; в детектор попадает только итог на конец блока."""
+
+    __slots__ = ("close_price", "close_liq", "last_sync", "v3_burned")
+
+    def __init__(self) -> None:
+        self.close_price: dict[str, float] = {}
+        self.close_liq: dict[str, float] = {}
+        self.last_sync: dict[str, V2Sync] = {}
+        self.v3_burned: set[str] = set()
 
 
 def group_by_block(logs: Iterable[RawLog]) -> dict[int, list[RawLog]]:
@@ -107,11 +120,12 @@ class Engine:
             info = self.pools.get(ev.pool)
             if info is not None and info.tracked:
                 touched[info.address] = info
-        await self._prime_v3(block, [p for p in touched.values()
-                                     if p.version == "v3" and not self.detector.has_price(p.address)])
+        await self._prime(block, [p for p in touched.values() if not self.detector.has_price(p.address)])
 
-        last_sync: dict[str, V2Sync] = {}
-        v3_burned: set[str] = set()
+        # Детектор видит только состояние пулов на ГРАНИЦАХ блоков (цена/ликвидность на конец блока).
+        # Промежуточные состояния внутри блока — флеш-заёмы, сэндвичи, «донат + swap» в одной
+        # транзакции — существуют мгновение и дают ложные «дампы» с миллионами долларов ликвидности.
+        blk = _BlockState()
         for ev in events:
             info = self.pools.get(ev.pool)
             if info is None:
@@ -124,11 +138,16 @@ class Engine:
             if not info.tracked:
                 continue
             try:
-                self._apply_event(ev, info, last_sync, v3_burned)
+                self._apply_event(ev, info, blk)
             except Exception:  # noqa: BLE001 — один кривой пул не должен ломать блок
                 log.exception("ошибка обработки события %s в пуле %s", type(ev).__name__, info.address)
 
-        await self._refresh_v3_liquidity(block, touched, v3_burned)
+        for pool, price in blk.close_price.items():
+            self.detector.record_price(pool, block, price)
+        for pool, usd in blk.close_liq.items():
+            self.detector.record_liquidity(pool, block, usd)
+
+        await self._refresh_v3_liquidity(block, touched, blk.v3_burned)
 
         out: list[Alert] = []
         for addr, info in touched.items():
@@ -150,8 +169,7 @@ class Engine:
                 log.debug("GC: выгружено %d неактивных пулов", removed)
         return out
 
-    def _apply_event(self, ev: Event, info: PoolInfo, last_sync: dict[str, V2Sync],
-                     v3_burned: set[str]) -> None:
+    def _apply_event(self, ev: Event, info: PoolInfo, blk: "_BlockState") -> None:
         d0, d1 = self._decimals(info)
         if d0 is None or d1 is None:
             return
@@ -163,15 +181,16 @@ class Engine:
         if isinstance(ev, V2Sync):
             price = v2_price_from_reserves(ev.reserve0, ev.reserve1, d0, d1, t0)
             if price:
-                self.detector.record_price(pool, ev.block, price)
+                blk.close_price[pool] = price
             if quote_usd:
                 reserve_q = ev.reserve1 if t0 else ev.reserve0
-                self.detector.record_liquidity(pool, ev.block, liquidity_usd(scale_amount(reserve_q, dq), quote_usd))
-            last_sync[pool] = ev
+                blk.close_liq[pool] = liquidity_usd(scale_amount(reserve_q, dq), quote_usd)
+            blk.last_sync[pool] = ev
 
         elif isinstance(ev, V2Swap):
+            # Цены до/после конкретного свопа — только для выбора «главного свопа» в алерте.
             pre = post = None
-            sync = last_sync.get(pool)
+            sync = blk.last_sync.get(pool)
             # В UniswapV2Pair.swap() Sync эмитится непосредственно перед Swap в той же транзакции,
             # поэтому резервы ДО свопа восстанавливаются точно.
             if sync is not None and sync.tx_hash == ev.tx_hash and sync.log_index == ev.log_index - 1:
@@ -179,15 +198,6 @@ class Engine:
                 r1 = sync.reserve1 - ev.amount1_in + ev.amount1_out
                 if r0 > 0 and r1 > 0:
                     pre = v2_price_from_reserves(r0, r1, d0, d1, t0)
-                    if pre:
-                        self.detector.record_pre_price(pool, ev.block, pre)
-                    # и ликвидность до свопа: продажа уменьшает резерв котируемого токена, и если бот
-                    # видит пул впервые (например, после часа без сделок и перезапуска), иначе он знал бы
-                    # только ликвидность «после» и мог отсечь дамп по порогу MIN_LIQUIDITY_USD
-                    if quote_usd:
-                        reserve_q = r1 if t0 else r0
-                        self.detector.record_pre_liquidity(pool, ev.block,
-                                                           liquidity_usd(scale_amount(reserve_q, dq), quote_usd))
                 post = v2_price_from_reserves(sync.reserve0, sync.reserve1, d0, d1, t0)
             target_in = ev.amount0_in if t0 else ev.amount1_in
             quote_out = ev.amount1_out if t0 else ev.amount0_out
@@ -198,10 +208,10 @@ class Engine:
                                                        sell_usd, pre, post))
 
         elif isinstance(ev, V3Swap):
-            before = self.detector.current_price(pool)
+            before = blk.close_price.get(pool) or self.detector.current_price(pool)
             price = v3_price(ev.sqrt_price_x96, d0, d1, t0)
             if price:
-                self.detector.record_price(pool, ev.block, price)
+                blk.close_price[pool] = price
             amount_target = ev.amount0 if t0 else ev.amount1
             amount_quote = ev.amount1 if t0 else ev.amount0
             sell_usd = None
@@ -218,37 +228,48 @@ class Engine:
         elif isinstance(ev, V3Burn):
             if ev.amount > 0:  # Burn с amount=0 — это «poke» для начисления комиссий
                 self.detector.record_burn(pool, ev.block)
-                v3_burned.add(pool)
+                blk.v3_burned.add(pool)
 
-    async def _prime_v3(self, block: int, pools: list[PoolInfo]) -> None:
-        """Для V3-пулов, встреченных впервые, берём состояние на конец предыдущего блока:
-        цену (slot0) и баланс котируемого токена. Иначе первый же своп-дамп (или вывод
-        ликвидности) в этом блоке не с чем было бы сравнить."""
+    async def _prime(self, block: int, pools: list[PoolInfo]) -> None:
+        """Для пулов, по которым у детектора ещё нет данных (бот видит пул впервые, после перезапуска
+        или после долгой тишины), читаем состояние на конец предыдущего блока: V2 — getReserves(),
+        V3 — slot0() и balanceOf. Это и есть «цена/ликвидность до» для дампа в текущем блоке."""
         if not pools:
             return
         calls: list[Call] = []
         for p in pools:
-            calls.append(Call(p.address, _SLOT0))
-            calls.append(Call(p.quote or "", encode_call("balanceOf(address)", ["address"], [p.address])))
+            if p.version == "v3":
+                calls.append(Call(p.address, _SLOT0))
+                calls.append(Call(p.quote or "", encode_call("balanceOf(address)", ["address"], [p.address])))
+            else:
+                calls.append(Call(p.address, _GET_RESERVES))
         try:
-            res = await self.mc.call(calls, block - 1)
+            res = iter(await self.mc.call(calls, block - 1))
         except RpcError as exc:
-            log.debug("состояние V3-пулов на блоке %d недоступно: %s", block - 1, exc)
+            log.debug("состояние пулов на блоке %d недоступно: %s", block - 1, exc)
             return
-        for n, p in enumerate(pools):
-            r_slot0, r_bal = res[2 * n], res[2 * n + 1]
-            if not r_slot0.success or len(r_slot0.data) < 32:
-                continue  # пул создан в этом блоке
+        for p in pools:
             d0, d1 = self._decimals(p)
-            if d0 is None or d1 is None:
-                continue
-            price = v3_price(int.from_bytes(r_slot0.data[:32], "big"), d0, d1, p.target_is_token0)
-            if price:
-                self.detector.record_initial_price(p.address, block - 1, price)
             quote_usd = self.eth.quote_usd(p.quote or "")
-            if r_bal.success and len(r_bal.data) >= 32 and quote_usd:
-                amount = scale_amount(int.from_bytes(r_bal.data[:32], "big"), d1 if p.target_is_token0 else d0)
-                self.detector.record_liquidity(p.address, block - 1, liquidity_usd(amount, quote_usd))
+            dq = d1 if p.target_is_token0 else d0
+            price = amount_q = None
+            if p.version == "v3":
+                r_slot0, r_bal = next(res), next(res)
+                if r_slot0.success and len(r_slot0.data) >= 32 and d0 is not None and d1 is not None:
+                    price = v3_price(int.from_bytes(r_slot0.data[:32], "big"), d0, d1, p.target_is_token0)
+                    if r_bal.success and len(r_bal.data) >= 32:
+                        amount_q = scale_amount(int.from_bytes(r_bal.data[:32], "big"), dq)
+            else:
+                r = next(res)
+                if r.success and len(r.data) >= 64 and d0 is not None and d1 is not None:
+                    r0, r1 = int.from_bytes(r.data[:32], "big"), int.from_bytes(r.data[32:64], "big")
+                    price = v2_price_from_reserves(r0, r1, d0, d1, p.target_is_token0)
+                    amount_q = scale_amount(r1 if p.target_is_token0 else r0, dq)
+            if not price:
+                continue  # пул создан в этом блоке или состояние недоступно
+            self.detector.record_initial_price(p.address, block - 1, price)
+            if amount_q is not None and quote_usd:
+                self.detector.record_liquidity(p.address, block - 1, liquidity_usd(amount_q, quote_usd))
 
     async def _refresh_v3_liquidity(self, block: int, touched: dict[str, PoolInfo], burned: set[str]) -> None:
         need: list[tuple[PoolInfo, int]] = []

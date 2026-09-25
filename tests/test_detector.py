@@ -24,15 +24,6 @@ def test_block_series_window_and_carry():
     assert s.carry == 8.0 and s.max() == 8.0 and s.current == 8.0
 
 
-def test_pre_points_do_not_become_carry():
-    s = BlockSeries()
-    s.add(100, 5.0)      # цена после свопа
-    s.add_pre(100, 9.0)  # цена до свопа
-    assert s.current == 5.0 and s.max() == 9.0
-    s.prune(110, 5)
-    assert s.carry == 5.0
-
-
 def test_basic_dump_signal():
     d = det()
     d.record_price(P, 100, 1.0)

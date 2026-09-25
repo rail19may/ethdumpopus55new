@@ -175,8 +175,8 @@ async def test_replay_finds_dumps(tmp_path):
     assert v2.price_after == pytest.approx((100 / 1.4) / 1_400_000)
     assert v2.drop_pct == pytest.approx((1 - 1 / 1.4**2) * 100)
     assert v2.price_before_usd == pytest.approx(1e-4 * 2100)
-    # максимум — ликвидность прямо перед дампом (блок 1001), уже по новому курсу ETH $2100
-    assert v2.liquidity_max_usd == pytest.approx(2 * 100 * 2100)
+    # максимум — ликвидность на конец блока 1000 (Sync был до свопа ETH, курс $2000)
+    assert v2.liquidity_max_usd == pytest.approx(2 * 100 * 2000)
     assert v2.main_tx == tx(10) and v2.seller == SELLER
     assert v2.sell_usd == pytest.approx((100 - 100 / 1.4) * 2100, rel=1e-6)
     assert not v2.rugpull
@@ -350,6 +350,9 @@ async def test_quiet_pool_dump_after_an_hour(tmp_path):
     chain.token(token, "QUIET", "Quiet", 18)
     chain.pool(quiet_pool, V2F, token, WETH)
     chain.v2_factory(V2F, {(PEPE, WETH): V2_POOL, (token, WETH): quiet_pool})
+    # состояние пула до дампа — его бот читает через getReserves() на предыдущий блок
+    chain.fn(quiet_pool, "getReserves()", lambda a, b: __import__("eth_abi").encode(
+        ["uint112", "uint112", "uint32"], [x, y, 0] if b < 1300 else [x2, y2, 0]))
     sell = int(x * (2**0.5 - 1))              # цена падает в 2 раза
     x2 = x + sell
     y2 = x * y // x2
@@ -395,3 +398,30 @@ async def test_garbage_fee_does_not_break_block(tmp_path):
     assert engine.pools.get(evil_v3).status == IGNORED_FAKE
     assert engine.pools.get(evil_v2).status == IGNORED_FAKE and engine.pools.get(evil_v2).fee is None
     assert {r["address"]: r["status"] for r in db.load_pools()}[evil_v3] == IGNORED_FAKE
+
+
+async def test_flash_loan_inside_block_is_not_a_dump(tmp_path):
+    """Случай BULL: в крошечный пул ($~200) внутри одной транзакции заводят флеш-заём на тысячи ETH
+    и сразу выводят обратно. На границах блоков ничего не изменилось — сигнала быть не должно."""
+    cfg = make_cfg(tmp_path)
+    chain = build_chain()
+    pool = "0x" + "09" * 20
+    token = "0x" + "a9" * 20
+    chain.token(token, "BULL", "BULL", 18)
+    chain.pool(pool, V2F, token, WETH)
+    chain.v2_factory(V2F, {(PEPE, WETH): V2_POOL, (token, WETH): pool})
+    x, y = 1_000_000 * E18, E18 // 20                      # 0.05 WETH ≈ $200 ликвидности
+    chain.fn(pool, "getReserves()", lambda a, b: __import__("eth_abi").encode(
+        ["uint112", "uint112", "uint32"], [x, y, 0]))
+    big = 3_700 * E18
+    # одна транзакция: покупка на флеш-заём (цена взлетает, ликвидность ~$20M) и продажа обратно
+    x_mid = x * y // (y + big)
+    chain.v2_sync(pool, 1001, tx(60), 10, x_mid, y + big)
+    chain.v2_swap(pool, 1001, tx(60), 11, 0, big, x - x_mid, 0, ROUTER, ROUTER)
+    chain.v2_sync(pool, 1001, tx(60), 12, x, y)
+    chain.v2_swap(pool, 1001, tx(60), 13, x - x_mid, 0, 0, big, ROUTER, ROUTER)
+    db = Database(cfg.sqlite_path)
+    engine = Engine(cfg, chain, db, CaptureNotifier(), mode="replay")
+    alerts = await run_replay(cfg, chain, engine, 1000, 1002)
+    assert pool not in [a.pool for a in alerts]
+    assert [a.pool for a in alerts] == [V2_POOL, V3_POOL]

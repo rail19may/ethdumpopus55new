@@ -10,36 +10,29 @@ class BlockSeries:
 
     carry нужен для редко торгуемых пулов: если прошлая сделка была 100 блоков назад,
     именно её цена — «цена до» для текущего дампа.
-
-    Точки с pre=True — промежуточные значения (цена ДО свопа внутри блока): участвуют в максимуме,
-    но не становятся текущим значением и не переносятся в carry.
+    Значения — состояние на конец блока (одна точка на блок).
     """
 
     __slots__ = ("points", "carry", "current")
 
     def __init__(self) -> None:
-        self.points: deque[tuple[int, float, bool]] = deque()
+        self.points: deque[tuple[int, float]] = deque()
         self.carry: float | None = None
         self.current: float | None = None
 
     def add(self, block: int, value: float) -> None:
-        self.points.append((block, value, False))
+        self.points.append((block, value))
         self.current = value
-
-    def add_pre(self, block: int, value: float) -> None:
-        self.points.append((block, value, True))
 
     def prune(self, block: int, window: int) -> None:
         """Оставляет точки блоков (block - window, block]."""
         limit = block - window
         pts = self.points
         while pts and pts[0][0] <= limit:
-            _, value, pre = pts.popleft()
-            if not pre:
-                self.carry = value
+            self.carry = pts.popleft()[1]
 
     def max(self) -> float | None:
-        values = [v for _, v, _ in self.points]
+        values = [v for _, v in self.points]
         if self.carry is not None:
             values.append(self.carry)
         return max(values) if values else None
